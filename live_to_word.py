@@ -3,6 +3,7 @@ import sounddevice as sd
 from docx import Document # to write .docx
 from faster_whisper import WhisperModel # to transcribe
 import webrtcvad
+import os, shutil
 
 # --- Optional VAD: we'll try to import; if not available, we fall back to timing-based chunks ---
 try:
@@ -41,6 +42,9 @@ def read_mic():
         while True:
             time.sleep(0.05)
 
+""" If webrtcvad is available: collect_chunks_vad() checks each 20ms frame to see if it’s speech. 
+It accumulates voiced frames (with a little tolerance for short silence) until ~CHUNK_SEC seconds, 
+then emits one chunk. """
 def collect_chunks_vad():
     vad = webrtcvad.Vad(2)  # 0..3 (3 = most aggressive)
     bytes_per_frame = int(SAMPLE_RATE * (FRAME_MS / 1000.0)) * 2  # int16 mono
@@ -66,7 +70,8 @@ def collect_chunks_vad():
                 chunk = b"".join(voiced)
                 yield np.frombuffer(chunk, dtype=np.int16)
                 voiced, voiced_len = [], 0.0
-
+""" If VAD is not available: collect_chunks_timer() 
+just emits fixed-length chunks by time (simpler, a bit less clean around pauses). """
 def collect_chunks_timer():
     # Simple fallback: emit fixed-size chunks regardless of speech
     bytes_per_block = int(SAMPLE_RATE * (FRAME_MS / 1000.0)) * 2
@@ -80,6 +85,7 @@ def collect_chunks_timer():
             del buf[:need_bytes]
             yield np.frombuffer(out, dtype=np.int16)
 
+# calls whisper to get text from the chuck of audio and concatenates the pieces
 def transcribe_pcm16(pcm16: np.ndarray):
     floats = pcm16.astype(np.float32) / 32768.0
     segments, info = model.transcribe(
@@ -89,9 +95,12 @@ def transcribe_pcm16(pcm16: np.ndarray):
     )
     return "".join(s.text for s in segments).strip()
 
+
+# cretaes a doc with todays date
 def doc_path_today():
     return DOC_DIR / f"{datetime.date.today().isoformat()}.docx"
 
+# creates a  doc with todays date if it does not exist
 def ensure_doc():
     p = doc_path_today()
     if not p.exists():
@@ -100,7 +109,7 @@ def ensure_doc():
         doc.save(p)
     return p
 
-import os, shutil
+
 
 word_opened = False  # keep at top of your file (global flag)
 
@@ -118,7 +127,7 @@ def append_to_doc(text: str):
         doc.add_heading(now, level=2)
         doc.add_paragraph("")  # spacer
         doc.add_paragraph(text)
-        # print(f"[{now}] {text}")
+        
     else:
         # Append text to the same last paragraph (same line)
         last_para = doc.paragraphs[-1]
@@ -130,22 +139,17 @@ def append_to_doc(text: str):
     try:
         shutil.move(tmp, p)
     except PermissionError:
-        print("⚠️ Word is locking the file — open the .tmp.docx copy instead.")
+        # print("⚠️ Word is locking the file — open the .tmp.docx copy instead.")
+        print(f"{text}")
     else:
-        print(f"Appended transcript to {p}")
-        # print(f"[{now}] {text}")
+        # print(f"Appended transcript to {p}")
+        print(f"{text}")
 
     # Open file only once for live viewing
     global word_opened
     if not word_opened:
         os.startfile(p)
         word_opened = True
-
-
-# show what is being printed on the terminal in my vscode editor
-# new word file for each day
-# additional mics so that if i have my earphones connected it is not an issue
-# 
 
 
 def main():
